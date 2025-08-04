@@ -1,0 +1,348 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_EXT_nonuniform_qualifier : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+struct MaterialGPU {
+	int type;
+	int index;
+	float pad0;
+	float pad1;
+};
+
+struct UberGPU {
+	vec3 Kd;
+	float pad0;
+    
+	vec3 Ks;
+	float pad1;
+
+    vec3 Kr;
+	float pad2;
+
+    vec3 Kt;
+	float pad3;
+
+    vec3 opacity;
+	float pad4;
+
+    int KdIdx;
+    int KsIdx;
+    int KrIdx;
+    int KtIdx;
+
+    int opacityIdx;
+    float eta;
+	int etaIdx;
+    float uroughness;
+
+	int uroughnessIdx;
+	float vroughness;
+	int vroughnessIdx;
+    int remaproughness;
+};
+
+struct MatteGPU {
+	vec3 Kd;
+	float pad0;
+
+	int KdIdx;
+	float sigma;
+	int sigmaIdx;
+	float pad1;
+};
+
+struct MetalGPU {
+	vec3 eta;
+	float pad0;
+	
+	vec3 k;
+	float pad1;
+	
+	int etaIdx;
+	int kIdx;
+	float uroughness;
+	int uroughnessIdx;
+
+	float vroughness;
+	int vroughnessIdx;
+	int remaproughness;
+	float pad2;
+};
+
+struct GlassGPU {
+	vec3 Kr;
+	float pad0;
+
+	vec3 Kt;
+	float pad1;
+
+
+	int KrIdx;
+	int KtIdx;
+	float eta;
+	int etaIdx;
+
+
+	float uroughness;
+	int uroughnessIdx;
+	float vroughness;
+	int vroughnessIdx;
+
+	int remaproughness;
+	float pad2;
+	float pad3;
+	float pad4;
+};
+
+struct MirrorGPU {
+	vec3 Kr;
+	float pad0;
+
+	int KrIdx;
+	float pad1;
+	float pad2;
+	float pad3;
+};
+
+struct SubstrateGPU {
+	vec3 Kd;
+	float pad0;
+
+	vec3 Ks;
+	float pad1;
+
+	int KdIdx;
+	int KsIdx;
+	float uroughness;
+	int uroughnessIdx;
+
+	float vroughness;
+	int vroughnessIdx;
+	int remaproughness;
+	float pad2;
+};
+
+struct PlasticGPU {
+	vec3 Kd;
+	float pad0;
+	vec3 Ks;
+	float pad1;
+
+	
+	int KdIdx;
+	int KsIdx;
+	float roughness;
+	int roughnessIdx;
+
+	
+	int remaproughness;
+	float pad2;
+	float pad3;
+	float pad4;
+};
+
+struct ShapeGPU {
+	mat4 modelMatrix;
+	
+	uint64_t vertexAddress;
+	uint64_t indexAddress;
+	
+	int materialIdx;
+	int areaLightIdx;
+	int alphaIdx;
+	int shadowAlphaIdx;
+	
+	int reverseOrientation;
+	float pad0;
+	float pad1;
+	float pad2;
+};
+
+struct AreaLightGPU {
+	vec3 scale;
+	float pad0;
+	vec3 L;
+	float pad1;
+
+	int twosided;
+	int samples;
+	float pad2;
+	float pad3;
+
+	vec4 pad4;
+};
+
+layout(set = 0, binding = 0) uniform CameraGPU {
+    vec3 camPos;
+    float pad0;
+    vec3 camDir;
+    float pad1;
+    vec3 camUp;
+    float pad2;
+    vec3 camRight;
+    float fovY;
+} camera;
+
+layout(set = 0, binding = 1) uniform OptionsGPU {
+    int frameCount;
+    int sampleCount;
+	int maxSampleCount;
+    float pad2;
+} options;
+
+layout(set = 1, binding = 0) readonly buffer instanceBuffer {
+    ShapeGPU instances[];
+};
+
+layout(set = 2, binding = 0) readonly buffer AreaLightBuffer { 
+    AreaLightGPU lights[]; 
+};
+layout(set = 2, binding = 1) readonly buffer MaterialBuffer { 
+    MaterialGPU materials[]; 
+};
+layout(set = 2, binding = 2) readonly buffer UberBuffer { 
+    UberGPU ubers[];
+};
+layout(set = 2, binding = 3) readonly buffer MatteBuffer { 
+    MatteGPU mattes[];
+};
+layout(set = 2, binding = 4) readonly buffer MetalBuffer { 
+    MetalGPU metals[]; 
+};
+layout(set = 2, binding = 5) readonly buffer GlassBuffer { 
+    GlassGPU glasses[]; 
+};
+layout(set = 2, binding = 6) readonly buffer MirrorBuffer { 
+    MirrorGPU mirrors[]; 
+};
+layout(set = 2, binding = 7) readonly buffer SubstrateBuffer { 
+    SubstrateGPU substrates[]; 
+};
+layout(set = 2, binding = 8) readonly buffer PlasticBuffer { 
+    PlasticGPU plastics[]; 
+};
+
+layout(set = 3, binding = 0) uniform sampler2D textures[];
+
+layout(set = 4, binding = 0) uniform accelerationStructureEXT topLevelAS;
+layout(set = 4, binding = 1, rgba32f) uniform image2D pingImage;
+layout(set = 4, binding = 2, rgba32f) uniform image2D pongImage;
+
+
+float rand(inout uint seed) {
+    seed ^= seed << 13;
+    seed ^= seed >> 17;
+    seed ^= seed << 5;
+    return float(seed) / 4294967296.0;
+}
+
+uint tea(in uint val0, in uint val1)
+{
+  uint v0 = val0;
+  uint v1 = val1;
+  uint s0 = 0;
+
+  for(uint n = 0; n < 16; n++)
+  {
+    s0 += 0x9e3779b9;
+    v0 += ((v1 << 4) + 0xa341316c) ^ (v1 + s0) ^ ((v1 >> 5) + 0xc8013ea4);
+    v1 += ((v0 << 4) + 0xad90777d) ^ (v0 + s0) ^ ((v0 >> 5) + 0x7e95761e);
+  }
+
+  return v0;
+}
+
+uint initRandom(in uvec2 resolution, in uvec2 screenCoord, in uint frame)
+{
+  return tea(screenCoord.y * resolution.x + screenCoord.x, frame);
+}
+
+struct RayPayload {
+    vec3 L;
+    vec3 beta;
+    vec3 nextOrigin;
+    vec3 nextDir;
+
+    int depth;
+    uint seed;
+    int terminated;
+    int bounce;
+	float pdf;
+};
+
+layout(location = 0) rayPayloadEXT RayPayload payload;
+
+
+vec3 toneMapACES(vec3 x) {
+    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+
+void main() {
+
+	if (options.sampleCount == 0) {
+        imageStore(pongImage, ivec2(gl_LaunchIDEXT.xy), vec4(0.0));
+		imageStore(pingImage, ivec2(gl_LaunchIDEXT.xy), vec4(0.0));
+    }
+	if (options.sampleCount == options.maxSampleCount) {
+		return;
+	}
+
+    uvec2 pixel = gl_LaunchIDEXT.xy;
+    uvec2 size = gl_LaunchSizeEXT.xy;
+    
+	// vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(size);
+	uint seed = initRandom(size, pixel, options.frameCount);
+	vec2 jitter = vec2(rand(seed), rand(seed));
+	vec2 uv = (vec2(pixel) + jitter) / vec2(size);
+
+    vec2 screen = uv * 2.0 - 1.0;
+	screen.x = -screen.x;
+    screen.y = -screen.y;
+    float aspect = float(size.x) / float(size.y);
+    float scale = tan(radians(camera.fovY) * 0.5);
+
+    vec3 dir = normalize(
+        screen.x * aspect * scale * camera.camRight +
+        screen.y * scale * camera.camUp +
+        camera.camDir
+    );
+
+	payload.L = vec3(0.0);
+	payload.beta = vec3(1.0);
+	payload.seed = initRandom(size, pixel, options.frameCount);
+	payload.depth = 0;
+	payload.terminated = 0;
+
+	vec3 origin = camera.camPos;
+
+	for (int i = 0; i < 12; ++i) {
+		payload.depth = i;
+		traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0,
+					origin, 0.0001, dir, 1e30, 0);
+		
+		if (payload.terminated != 0) break;
+
+		if (i > 2) {
+			float p = clamp(max(payload.beta.r, max(payload.beta.g, payload.beta.b)), 0.05, 1.0);
+			if (rand(payload.seed) > p) {
+				break; // 경로 종료
+			}
+			payload.beta /= p; // 에너지 보존 보정
+		}
+
+		origin = payload.nextOrigin;
+		dir = payload.nextDir;
+	}
+
+	vec4 result = vec4(payload.L, 1.0);
+	ivec2 ipixel = ivec2(pixel);
+
+	vec4 prev = imageLoad(pongImage, ipixel);
+    vec4 accum = prev + result;
+    imageStore(pongImage, ipixel, accum);
+
+    float fc = float(options.sampleCount);
+    vec4 blended = accum / (fc + 1.0);
+	imageStore(pingImage, ipixel, vec4(blended.rgb, 1.0));
+}
