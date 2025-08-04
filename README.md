@@ -51,6 +51,6 @@ Vulkan Ray Tracing Extension을 직접 사용하여, **재질, 조명, 반사, �
 ## 더 알아보기
 
 자세한 구현 과정과 렌더링 이론 정리는 블로그에서 확인할 수 있습니다:
-👉 [https://surkim.tistory.com/132](https://surkim.tistory.com/132)
+[https://surkim.tistory.com/132](https://surkim.tistory.com/132)
 
 ---
